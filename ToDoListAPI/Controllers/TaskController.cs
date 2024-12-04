@@ -1,7 +1,11 @@
 ﻿using AutoMapper;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
 using System.Threading.Tasks;
+using ToDoListAPI.Controllers.Base;
 using ToDoListAPI.Data;
 using ToDoListAPI.DTOs.Task;
 using ToDoListAPI.DTOs.User;
@@ -11,14 +15,11 @@ using ToDoListAPI.Model;
 namespace ToDoListAPI.Controllers
 {
     [Route("api/Task")]
-    public class TaskController : CrudControllerBase<DTOs.Task.TaskDto, DTOs.Task.TaskCreateDto, DTOs.Task.TaskUpdateDto>
+    public class TaskController(IMapper mapper, AppDbContext context, IMemoryCache cache) : ToDoControllerBase(mapper, context, cache)
     {
-        public TaskController(IMapper mapper, AppDbContext context) : base(mapper, context)
-        {
-        }
-
+        [Authorize]
         [HttpPost("Create")]
-        public override IActionResult Create([FromBody] TaskCreateDto dto)
+        public IActionResult Create([FromBody] TaskCreateDto dto)
         {
             if (dto == null)
                 return BadRequest(new { Error = "Dados inválidos." });
@@ -38,41 +39,59 @@ namespace ToDoListAPI.Controllers
             return Ok(new { Message = "Tarefa criada com sucesso!", Task = returnTask });
         }
 
+        [Authorize]
         [HttpPost("Delete/{id}")]
-        public override IActionResult Delete(string id)
+        public IActionResult Delete(string id)
         {
             if (!int.TryParse(id, out var taskId))
                 return BadRequest(new { Error = "ID inválido." });
 
-            var task = _context.Tasks.FirstOrDefault(t => t.Id == taskId);
-            if (task == null)
-                return NotFound(new { Error = "Tarefa não encontrada." });
+            // Obter o ID do usuário logado
+            var userId = CurrentUserId();
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized(new { Error = "Usuário não autenticado." });
 
+            // Filtrar a tarefa pelo ID da tarefa e pelo usuário logado
+            var task = _context.Tasks
+                .Include(t => t.Category) // Inclui a categoria para acessar o UserId
+                .FirstOrDefault(t => t.Id == taskId && t.Category != null && t.Category.UserId.ToString() == userId);
+
+            if (task == null)
+                return NotFound(new { Error = "Tarefa não encontrada ou não pertence ao usuário logado." });
+
+            // Remove a tarefa
             _context.Tasks.Remove(task);
             _context.SaveChanges();
 
             return Ok(new { Message = "Tarefa excluída com sucesso!" });
         }
 
+        [Authorize]
         [HttpGet("GetAll")]
-        public override IActionResult GetAll()
+        public IActionResult GetAll()
         {
             var tasks = _context.Tasks
-            .Include(t => t.Category)
-            .ToList();
+                .Include(t => t.Category)
+                .Where(t => t.Category != null && t.Category.UserId.ToString() == CurrentUserId())
+                .ToList();
 
             var taskDtos = _mapper.Map<List<TaskDto>>(tasks);
 
             return Ok(taskDtos);
         }
 
+        [Authorize]
         [HttpGet("GetById/{id}")]
-        public override IActionResult GetById(string id, bool complete = false)
+        public IActionResult GetById(string id)
         {
             if (!int.TryParse(id, out var taskId))
                 return BadRequest(new { Error = "ID inválido." });
 
-            var task = _context.Tasks.FirstOrDefault(t => t.Id == taskId);
+            var task = _context.Tasks
+                .Include(t => t.Category)
+                .Where(t => t.Category != null && t.Category.UserId.ToString() == CurrentUserId())
+                .FirstOrDefault(t => t.Id == taskId);
+
             if (task == null)
                 return NotFound(new { Error = "Tarefa não encontrada." });
 
@@ -80,13 +99,19 @@ namespace ToDoListAPI.Controllers
             return Ok(taskDto);
         }
 
+        [Authorize]
         [HttpPost("Update/{id}")]
-        public override IActionResult Update(string id, [FromBody] TaskUpdateDto dto)
+        public IActionResult Update(string id, [FromBody] TaskUpdateDto dto)
         {
             if (!int.TryParse(id, out var taskId))
                 return BadRequest(new { Error = "ID inválido." });
 
-            var task = _context.Tasks.FirstOrDefault(t => t.Id == taskId);
+            var task = _context.Tasks
+                .Include(t => t.Category)
+                .Where(t => t.Category != null && t.Category.UserId.ToString() == CurrentUserId())
+                .FirstOrDefault(t => t.Id == taskId);
+
+
             if (task == null)
                 return NotFound(new { Error = "Tarefa não encontrada." });
 

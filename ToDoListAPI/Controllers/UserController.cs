@@ -1,27 +1,33 @@
 ﻿using AutoMapper;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
 using System.Text.Json;
+using ToDoListAPI.Controllers.Base;
 using ToDoListAPI.Data;
 using ToDoListAPI.DTOs.Category;
 using ToDoListAPI.DTOs.User;
 using ToDoListAPI.Interfaces;
 using ToDoListAPI.Model;
+using ToDoListAPI.Services;
 
 namespace ToDoListAPI.Controllers
 {
     [Route("api/user")]
-    public class UserController : CrudControllerBase<UserDto, UserCreateDto, UserUpdateDto>
+    public class UserController(IMapper mapper, AppDbContext context, IMemoryCache cache) : ToDoControllerBase(mapper, context, cache)
     {
-        public UserController(IMapper mapper, AppDbContext context) : base(mapper, context)
-        {
-        }
-
         [HttpPost("Create")]
-        public override IActionResult Create([FromBody] UserCreateDto dto)
+        public IActionResult Create([FromBody] UserCreateDto dto)
         {
             if (dto == null)
                 return BadRequest(new { Error = "Dados inválidos." });
+
+            var checkUsername = _context.Users.FirstOrDefault(u => u.Username == dto.Username);
+
+            if (checkUsername != null)
+                return BadRequest(new { Error = "Username em uso." });
 
             var user = _mapper.Map<User>(dto);
             _context.Users.Add(user);
@@ -30,36 +36,38 @@ namespace ToDoListAPI.Controllers
             return Ok(new { Message = "Usuario criada com sucesso!", Usuario = _mapper.Map<UserDto>(user) });
         }
 
-        [HttpPost("Delete/{id}")]
-        public override IActionResult Delete(string id)
+        [Authorize]
+        [HttpPost("Delete")]
+        public IActionResult Delete()
         {
-            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == id);
+            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == CurrentUserId());
             if (user == null) return NotFound();
+
+            var token = CurrentTokenLogin();
+
+            if (token == String.Empty)
+                return Unauthorized(new { Error = "Token de autenticação não encontrado." });
+
+            AuthService.RevokeJWTToken(_cache, token);
 
             _context.Users.Remove(user);
             _context.SaveChanges();
+
             return Ok(new { Message = "Usuário excluído com sucesso!" });
         }
 
-        [HttpGet("GetAll")]
-        public override IActionResult GetAll()
+        [Authorize]
+        [HttpGet("GetUserData/{complete?}")]
+        public IActionResult GetUserData(bool complete = false)
         {
-            var users = _context.Users.ToList();
-            var userDtos = _mapper.Map<List<UserDto>>(users);
-            return Ok(userDtos);
-        }
-
-        //Necessario alteração
-        [HttpGet("GetById/{id}/{complete?}")]
-        public override IActionResult GetById(string id, bool complete = false)
-        {
-            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == id);
+            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == CurrentUserId());
             if (user == null) return NotFound();
 
             if (complete)
             {
                 var userWithDetails = _context.Users
-                    .Where(u => u.Id.ToString() == id)
+                    .Include(c => c.Categoria)
+                    .Where(u => u.Id.ToString() == CurrentUserId())
                     .Select(u => new
                     {
                         u.Id,
@@ -88,10 +96,11 @@ namespace ToDoListAPI.Controllers
             return Ok(userDto);
         }
 
-        [HttpPost("Update/{id}")]
-        public override IActionResult Update(string id, [FromBody] UserUpdateDto dto)
+        [Authorize]
+        [HttpPost("Update")]
+        public IActionResult Update([FromBody] UserUpdateDto dto)
         {
-            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == id);
+            var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == CurrentUserId());
             if (user == null) return NotFound();
 
             _mapper.Map(dto, user);
